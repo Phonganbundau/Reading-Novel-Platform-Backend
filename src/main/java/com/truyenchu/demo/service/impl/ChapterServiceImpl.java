@@ -19,6 +19,8 @@ import com.truyenchu.demo.repository.StoryRepository;
 import com.truyenchu.demo.repository.UserRepository;
 import com.truyenchu.demo.service.ChapterService;
 import com.truyenchu.demo.service.NotificationService;
+import com.truyenchu.demo.service.NotificationProducer;
+import com.truyenchu.demo.dto.NewChapterNotificationMessage;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -42,6 +44,7 @@ public class ChapterServiceImpl implements ChapterService {
     private final ChapterUnlockRepository chapterUnlockRepository;
     private final ReadingHistoryRepository readingHistoryRepository;
     private final NotificationService notificationService;
+    private final NotificationProducer notificationProducer;
     private final FollowRepository followRepository;
 
     @Override
@@ -81,13 +84,16 @@ public class ChapterServiceImpl implements ChapterService {
             // Không gửi thông báo cho chính người tạo chapter
             if (!follower.equals(user)) {
       
-                notificationService.createNewChapterNotification(
-                    follower, 
+                // Tạo message và gửi vào RabbitMQ queue để xử lý async
+                NewChapterNotificationMessage message = new NewChapterNotificationMessage(
                     story.getId(),
-                    story.getTitle(), 
+                    story.getTitle(),
                     savedChapter.getChapterNumber(),
-                    savedChapter.getTitle()
+                    savedChapter.getTitle(),
+                    user.getId(),
+                    follower.getId()
                 );
+                notificationProducer.sendNewChapterNotification(message);
             } else {
                 
             }

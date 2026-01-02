@@ -10,6 +10,7 @@ import com.truyenchu.demo.dto.StoryUnlockDTO;
 import com.truyenchu.demo.dto.StoryGiftDTO;
 import com.truyenchu.demo.dto.StoryStatsDTO;
 import com.truyenchu.demo.dto.StoryFanDTO;
+import com.truyenchu.demo.dto.PageResponse;
 import com.truyenchu.demo.entity.Follow;
 import com.truyenchu.demo.entity.Genre;
 import com.truyenchu.demo.entity.Story;
@@ -34,8 +35,11 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -45,12 +49,16 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 
 @Service
 @RequiredArgsConstructor
 @Transactional
 public class StoryServiceImpl implements StoryService {
+    private static final String CACHE_PREFIX_RECENTLY_UPDATED = "recentlyUpdatedStories:";
+    private static final long CACHE_TTL_MINUTES = 30;
+    
     private final StoryRepository storyRepository;
     private final FollowRepository followRepository;
     private final GenreRepository genreRepository;
@@ -59,6 +67,8 @@ public class StoryServiceImpl implements StoryService {
     private final ChapterUnlockRepository chapterUnlockRepository;
     private final ReadingHistoryRepository readingHistoryRepository;
     private final GiftTransactionRepository giftTransactionRepository;
+    private final RedisTemplate<String, Object> redisTemplate;
+    private final ObjectMapper objectMapper;
 
     @Override
     @Transactional
@@ -361,16 +371,68 @@ public class StoryServiceImpl implements StoryService {
 
     @Override
     public Page<StoryListDTO> getRecentlyUpdatedStories(Pageable pageable) {
+        String cacheKey = CACHE_PREFIX_RECENTLY_UPDATED + pageable.getPageNumber() + "_" + pageable.getPageSize();
+        
+        // Kiểm tra cache
+        Object cachedValue = redisTemplate.opsForValue().get(cacheKey);
+        if (cachedValue != null) {
+            try {
+                // Deserialize với TypeReference để đảm bảo đúng type
+                PageResponse<StoryListDTO> cachedResponse = objectMapper.convertValue(
+                    cachedValue, 
+                    new TypeReference<PageResponse<StoryListDTO>>() {}
+                );
+                // Convert PageResponse về Page
+                return new PageImpl<>(cachedResponse.getContent(), pageable, cachedResponse.getTotalElements());
+            } catch (Exception e) {
+                // Nếu deserialize fail, xóa cache và query lại từ DB
+                redisTemplate.delete(cacheKey);
+            }
+        }
+        
+        // Nếu không có trong cache, query từ database
         Page<Story> stories = storyRepository.findAllByOrderByUpdatedAtDesc(pageable);
-        return stories.map(StoryListDTO::fromEntity);
+        Page<StoryListDTO> result = stories.map(StoryListDTO::fromEntity);
+        
+        // Convert Page sang PageResponse trước khi lưu vào cache
+        PageResponse<StoryListDTO> pageResponse = PageResponse.fromPage(result);
+        redisTemplate.opsForValue().set(cacheKey, pageResponse, CACHE_TTL_MINUTES, TimeUnit.MINUTES);
+        
+        return result;
     }
 
     @Override
     public Page<StoryListDTO> getRecentlyUpdatedStoriesByGenre(String genreName, Pageable pageable) {
+        String cacheKey = CACHE_PREFIX_RECENTLY_UPDATED + "genre_" + genreName + "_" + pageable.getPageNumber() + "_" + pageable.getPageSize();
+        
+        // Kiểm tra cache
+        Object cachedValue = redisTemplate.opsForValue().get(cacheKey);
+        if (cachedValue != null) {
+            try {
+                // Deserialize với TypeReference để đảm bảo đúng type
+                PageResponse<StoryListDTO> cachedResponse = objectMapper.convertValue(
+                    cachedValue, 
+                    new TypeReference<PageResponse<StoryListDTO>>() {}
+                );
+                // Convert PageResponse về Page
+                return new PageImpl<>(cachedResponse.getContent(), pageable, cachedResponse.getTotalElements());
+            } catch (Exception e) {
+                // Nếu deserialize fail, xóa cache và query lại từ DB
+                redisTemplate.delete(cacheKey);
+            }
+        }
+        
+        // Nếu không có trong cache, query từ database
         Genre genre = genreRepository.findByNameIgnoreCase(genreName)
             .orElseThrow(() -> new ResourceNotFoundException("Genre not found"));
         Page<Story> stories = storyRepository.findByGenreOrderByUpdatedAtDesc(genre, pageable);
-        return stories.map(StoryListDTO::fromEntity);
+        Page<StoryListDTO> result = stories.map(StoryListDTO::fromEntity);
+        
+        // Convert Page sang PageResponse trước khi lưu vào cache
+        PageResponse<StoryListDTO> pageResponse = PageResponse.fromPage(result);
+        redisTemplate.opsForValue().set(cacheKey, pageResponse, CACHE_TTL_MINUTES, TimeUnit.MINUTES);
+        
+        return result;
     }
 
     @Override
